@@ -60,6 +60,20 @@ function App() {
     loadChatSessions();
   }, []);
 
+  // Close sessions dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (sessionsDropdownRef.current && !sessionsDropdownRef.current.contains(event.target)) {
+        setShowSessions(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
+
   const generateSessionId = () => {
     return 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
   };
