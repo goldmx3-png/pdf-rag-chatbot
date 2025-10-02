@@ -234,6 +234,9 @@ function App() {
         timestamp: new Date(),
       };
       setMessages(prev => [...prev, botMessage]);
+      
+      // Refresh sessions list to show updated message count
+      await loadChatSessions();
 
     } catch (error) {
       console.error('Error sending message:', error);
