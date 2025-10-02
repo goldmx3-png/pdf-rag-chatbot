@@ -257,6 +257,7 @@ function App() {
     setSessionId(newSessionId);
     localStorage.setItem('currentSessionId', newSessionId);
     setMessages([]);
+    setShowSessions(false);
     toast.success('New chat session started');
   };
 
