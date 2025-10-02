@@ -218,7 +218,9 @@ function App() {
   };
 
   const startNewSession = () => {
-    setSessionId(generateSessionId());
+    const newSessionId = generateSessionId();
+    setSessionId(newSessionId);
+    localStorage.setItem('currentSessionId', newSessionId);
     setMessages([]);
     toast.success('New chat session started');
   };
