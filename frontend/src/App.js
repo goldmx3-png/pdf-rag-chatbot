@@ -24,6 +24,8 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [selectedFile, setSelectedFile] = useState(null);
   const [activeTab, setActiveTab] = useState('chat');
+  const [chatSessions, setChatSessions] = useState([]);
+  const [showSessions, setShowSessions] = useState(false);
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
 
