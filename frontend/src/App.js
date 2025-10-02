@@ -10,7 +10,7 @@ import { Alert, AlertDescription } from './components/ui/alert';
 import { toast } from 'sonner';
 import { Toaster } from './components/ui/sonner';
 import { Separator } from './components/ui/separator';
-import { Upload, MessageSquare, FileText, Trash2, Send, Bot, User, Loader2 } from 'lucide-react';
+import { Upload, MessageSquare, FileText, Trash2, Send, Bot, User, Loader2, History, Clock, ChevronDown } from 'lucide-react';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
