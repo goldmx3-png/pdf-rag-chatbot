@@ -412,15 +412,81 @@ function App() {
                       {documents.length} document{documents.length !== 1 ? 's' : ''} available for questions
                     </p>
                   </div>
-                  <Button
-                    variant="outline"
-                    onClick={startNewSession}
-                    className="flex items-center space-x-2"
-                    data-testid="new-session-btn"
-                  >
-                    <MessageSquare className="w-4 h-4" />
-                    <span>New Session</span>
-                  </Button>
+                  <div className="flex items-center space-x-2">
+                    <div className="relative">
+                      <Button
+                        variant="outline"
+                        onClick={() => setShowSessions(!showSessions)}
+                        className="flex items-center space-x-2"
+                        data-testid="sessions-btn"
+                      >
+                        <History className="w-4 h-4" />
+                        <span>Sessions</span>
+                        <ChevronDown className="w-4 h-4" />
+                      </Button>
+                      
+                      {showSessions && (
+                        <div className="absolute right-0 mt-2 w-80 bg-white border border-slate-200 rounded-lg shadow-lg z-50 max-h-96 overflow-y-auto">
+                          <div className="p-4 border-b border-slate-200">
+                            <h3 className="font-medium text-slate-900">Chat Sessions</h3>
+                          </div>
+                          <div className="p-2">
+                            {chatSessions.length === 0 ? (
+                              <p className="text-sm text-slate-500 p-4 text-center">No previous sessions</p>
+                            ) : (
+                              chatSessions.slice(0, 10).map((session) => (
+                                <button
+                                  key={session.session_id}
+                                  onClick={() => switchToSession(session)}
+                                  className={`w-full text-left p-3 rounded-lg hover:bg-slate-50 border mb-2 ${
+                                    session.session_id === sessionId ? 'bg-blue-50 border-blue-200' : 'border-slate-200'
+                                  }`}
+                                  data-testid={`session-${session.session_id}`}
+                                >
+                                  <div className="flex items-center justify-between">
+                                    <div className="flex-1 min-w-0">
+                                      <div className="flex items-center space-x-2">
+                                        <Clock className="w-3 h-3 text-slate-400" />
+                                        <span className="text-xs text-slate-500">
+                                          {new Date(session.last_message_time).toLocaleDateString()}
+                                        </span>
+                                      </div>
+                                      <p className="text-sm font-medium text-slate-700 truncate">
+                                        {session.message_count} message{session.message_count !== 1 ? 's' : ''}
+                                      </p>
+                                    </div>
+                                    {session.session_id === sessionId && (
+                                      <Badge variant="secondary" className="text-xs">Current</Badge>
+                                    )}
+                                  </div>
+                                </button>
+                              ))
+                            )}
+                          </div>
+                          <div className="p-2 border-t border-slate-200">
+                            <Button
+                              onClick={startNewSession}
+                              className="w-full flex items-center justify-center space-x-2"
+                              data-testid="new-session-from-dropdown-btn"
+                            >
+                              <MessageSquare className="w-4 h-4" />
+                              <span>Start New Session</span>
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    
+                    <Button
+                      variant="outline"
+                      onClick={startNewSession}
+                      className="flex items-center space-x-2"
+                      data-testid="new-session-btn"
+                    >
+                      <MessageSquare className="w-4 h-4" />
+                      <span>New Session</span>
+                    </Button>
+                  </div>
                 </div>
               </CardContent>
             </Card>
