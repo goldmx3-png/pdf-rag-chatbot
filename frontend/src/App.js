@@ -27,10 +27,22 @@ function App() {
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
 
-  // Generate session ID on first load
+  // Generate or restore session ID on first load
   useEffect(() => {
-    if (!sessionId) {
-      setSessionId(generateSessionId());
+    const savedSessionId = localStorage.getItem('currentSessionId');
+    if (savedSessionId) {
+      setSessionId(savedSessionId);
+    } else if (!sessionId) {
+      const newSessionId = generateSessionId();
+      setSessionId(newSessionId);
+      localStorage.setItem('currentSessionId', newSessionId);
+    }
+  }, []);
+
+  // Load chat history when session ID changes
+  useEffect(() => {
+    if (sessionId) {
+      loadChatHistory(sessionId);
     }
   }, [sessionId]);
 
