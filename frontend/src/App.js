@@ -428,7 +428,7 @@ function App() {
                     </p>
                   </div>
                   <div className="flex items-center space-x-2">
-                    <div className="relative">
+                    <div className="relative" ref={sessionsDropdownRef}>
                       <Button
                         variant="outline"
                         onClick={() => setShowSessions(!showSessions)}
