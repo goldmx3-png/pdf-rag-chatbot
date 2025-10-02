@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  # MongoDB Service (for local development)
+  mongodb:
+    image: mongo:7.0
+    container_name: pdf-rag-mongodb-dev
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME:-admin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-password123}
+      MONGO_INITDB_DATABASE: ${DB_NAME:-pdf_rag_db}
+    volumes:
+      - mongodb_dev_data:/data/db
+      - ./mongo-init:/docker-entrypoint-initdb.d
+    networks:
+      - pdf-rag-dev-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ChromaDB Service (for local development)
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: pdf-rag-chromadb-dev
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - CHROMA_SERVER_HOST=0.0.0.0
+      - CHROMA_SERVER_HTTP_PORT=8000
+      - ANONYMIZED_TELEMETRY=${CHROMA_ANONYMIZED_TELEMETRY:-TRUE}
+      - IS_PERSISTENT=TRUE
+      - PERSIST_DIRECTORY=/chroma/chroma_db
+    volumes:
+      - chromadb_dev_data:/chroma/chroma_db
+    networks:
+      - pdf-rag-dev-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/api/v1/heartbeat || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  mongodb_dev_data:
+    driver: local
+  chromadb_dev_data:
+    driver: local
+
+networks:
+  pdf-rag-dev-network:
+    driver: bridge

@@ -81,3 +81,14 @@ android-sdk/ -e
 # Environment files
 *.env
 *.env.*
+!.env.example
+
+# Database and storage
+chroma_db/
+mongodb_data/
+chromadb_data/
+backend_uploads/
+uploads/
+
+# Docker volumes
+*.log

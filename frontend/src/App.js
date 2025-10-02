@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import './App.css';
 import axios from 'axios';
+import ReactMarkdown from 'react-markdown';
 import { Button } from './components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './components/ui/card';
 import { Input } from './components/ui/input';
@@ -204,7 +205,7 @@ function App() {
     if (!currentMessage.trim() || isLoading) return;
 
     if (documents.length === 0) {
-      toast.error('Please upload at least one PDF document before chatting');
+      toast.error('Please upload corporate documents before starting a conversation');
       return;
     }
 
@@ -266,7 +267,7 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-cyan-50">
-      <Toaster position="top-right" />
+      <Toaster position="bottom-right" expand={false} richColors />
       
       {/* Header */}
       <header className="bg-white/80 backdrop-blur-md border-b border-slate-200 sticky top-0 z-50">
@@ -278,9 +279,9 @@ function App() {
               </div>
               <div>
                 <h1 className="text-2xl font-bold bg-gradient-to-r from-blue-600 to-cyan-600 bg-clip-text text-transparent">
-                  RAG Chatbot
+                  VTransact Corporate Chatbot
                 </h1>
-                <p className="text-sm text-slate-600">Upload PDFs and chat with your documents</p>
+                <p className="text-sm text-slate-600">Your AI-powered corporate document assistant</p>
               </div>
             </div>
             
@@ -548,9 +549,9 @@ function App() {
                               <User className="w-5 h-5 mt-0.5 text-white" />
                             )}
                             <div className="flex-1">
-                              <p className="text-sm leading-relaxed whitespace-pre-wrap">
-                                {message.content}
-                              </p>
+                              <div className="text-sm leading-relaxed prose prose-sm max-w-none prose-p:my-1 prose-strong:text-slate-900 prose-strong:font-semibold">
+                                <ReactMarkdown>{message.content}</ReactMarkdown>
+                              </div>
                               
                               {message.source_documents && message.source_documents.length > 0 && (
                                 <div className="mt-3 pt-3 border-t border-slate-200">

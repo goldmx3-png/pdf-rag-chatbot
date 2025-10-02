@@ -18,18 +18,50 @@ from sklearn.metrics.pairwise import cosine_similarity
 import json
 import chromadb
 from chromadb.config import Settings
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+from openai import AsyncOpenAI
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+
+# Load environment variables
+if os.path.exists(ROOT_DIR / '.env'):
+    load_dotenv(ROOT_DIR / '.env')
 
 # MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+mongo_url = os.environ.get('MONGO_URL')
+if not mongo_url:
+    raise ValueError("MONGO_URL environment variable is required")
 
-# Initialize ChromaDB with persistence
-chroma_client = chromadb.PersistentClient(path="/app/chroma_db")
+client = AsyncIOMotorClient(mongo_url)
+db_name = os.environ.get('DB_NAME', 'pdf_rag_db')
+db = client[db_name]
+
+# Initialize ChromaDB
+environment = os.environ.get('ENVIRONMENT', 'local')
+if environment == 'docker':
+    # Use ChromaDB HTTP client to connect to ChromaDB service
+    chroma_host = os.environ.get('CHROMA_HOST', 'chromadb')
+    chroma_port = int(os.environ.get('CHROMA_PORT', 8000))
+    chroma_client = chromadb.HttpClient(
+        host=chroma_host,
+        port=chroma_port
+    )
+else:
+    # For local development with containerized ChromaDB
+    chroma_host = os.environ.get('CHROMA_HOST', 'localhost')
+    chroma_port = int(os.environ.get('CHROMA_PORT', 8000))
+    try:
+        # Try HTTP client first (for containerized ChromaDB)
+        chroma_client = chromadb.HttpClient(
+            host=chroma_host,
+            port=chroma_port
+        )
+        # Test the connection
+        chroma_client.heartbeat()
+    except Exception as e:
+        logging.warning(f"Could not connect to ChromaDB HTTP service: {e}")
+        # Fallback to local persistent client
+        chroma_db_path = os.environ.get('CHROMA_DB_PATH', './chroma_db')
+        chroma_client = chromadb.PersistentClient(path=chroma_db_path)
 
 # Initialize sentence transformer for embeddings
 embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
@@ -40,8 +72,19 @@ app = FastAPI()
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
 
-# LLM Chat instance
-llm_api_key = os.environ.get('EMERGENT_LLM_KEY')
+# OpenAI/OpenRouter LLM setup
+openai_api_key = os.environ.get('OPENAI_API_KEY')
+if openai_api_key:
+    # Check if it's an OpenRouter key (starts with sk-or-v1)
+    if openai_api_key.startswith('sk-or-v1'):
+        openai_client = AsyncOpenAI(
+            api_key=openai_api_key,
+            base_url="https://openrouter.ai/api/v1"
+        )
+    else:
+        openai_client = AsyncOpenAI(api_key=openai_api_key)
+else:
+    openai_client = None
 
 # Document Models
 class Document(BaseModel):
@@ -188,43 +231,72 @@ async def search_relevant_chunks(query: str, top_k: int = 5) -> List[Dict[str, A
         logging.error(f"Error searching chunks: {str(e)}")
         return []
 
-async def generate_rag_response(query: str, context_chunks: List[Dict[str, Any]]) -> str:
-    """Generate response using LLM with retrieved context."""
+async def generate_rag_response(query: str, context_chunks: List[Dict[str, Any]], chat_history: List[Dict[str, str]] = None) -> str:
+    """Generate response using OpenAI LLM with retrieved context and conversation history."""
     try:
+        if not openai_client:
+            return "I apologize, but the AI service is currently not configured. Please contact your system administrator."
+
         # Prepare context from retrieved chunks
-        context = "\n\n".join([f"Document excerpt {i+1}:\n{chunk['content']}" 
+        context = "\n\n".join([f"Document excerpt {i+1}:\n{chunk['content']}"
                               for i, chunk in enumerate(context_chunks)])
-        
-        # Create system message for RAG
-        system_message = """You are a helpful AI assistant that answers questions based on the provided document excerpts. 
-        Use only the information from the given context to answer questions. If the context doesn't contain enough information 
-        to answer the question, say so clearly. Be concise and accurate."""
-        
-        # Create user message with context and query
-        user_message_text = f"""Context from documents:
+
+        # Create messages for OpenAI Chat API
+        messages = [
+            {
+                "role": "system",
+                "content": """You are VTransact Corporate Assistant, a professional AI chatbot designed to help employees access and understand corporate documents.
+
+Your role:
+- Provide accurate, professional responses based on corporate documentation
+- Use only information from the provided document context
+- Maintain a helpful, corporate-appropriate tone
+- Reference specific documents when citing information
+- If information is not available in the provided context, politely inform the user
+- Maintain conversation context to assist with follow-up questions
+
+Be concise, accurate, and professional in all responses."""
+            }
+        ]
+
+        # Add conversation history (last 5 exchanges to keep context manageable)
+        if chat_history:
+            for msg in chat_history[-5:]:
+                messages.append({
+                    "role": "user",
+                    "content": msg["message"]
+                })
+                messages.append({
+                    "role": "assistant",
+                    "content": msg["response"]
+                })
+
+        # Add current query with context
+        messages.append({
+            "role": "user",
+            "content": f"""Context from documents:
 {context}
 
 Question: {query}
 
 Please answer the question based on the provided context."""
+        })
+        
+        # Get response from OpenAI/OpenRouter
+        # Use different model based on the API being used
+        model = "openai/gpt-3.5-turbo" if openai_api_key.startswith('sk-or-v1') else "gpt-3.5-turbo"
 
-        # Initialize LLM chat
-        session_id = str(uuid.uuid4())
-        chat = LlmChat(
-            api_key=llm_api_key,
-            session_id=session_id,
-            system_message=system_message
-        ).with_model("openai", "gpt-4o-mini")
+        response = await openai_client.chat.completions.create(
+            model=model,
+            messages=messages,
+            max_tokens=1000,
+            temperature=0.3,  # Lower temperature for more focused responses
+        )
         
-        # Create user message
-        user_message = UserMessage(text=user_message_text)
+        return response.choices[0].message.content
         
-        # Get response from LLM
-        response = await chat.send_message(user_message)
-        
-        return response
     except Exception as e:
-        logging.error(f"Error generating LLM response: {str(e)}")
+        logging.error(f"Error generating OpenAI response: {str(e)}")
         return "I apologize, but I'm having trouble processing your request right now. Please try again later."
 
 # Routes
@@ -341,19 +413,24 @@ async def chat_with_documents(request: ChatRequest):
     """Chat with uploaded documents using RAG."""
     try:
         session_id = request.session_id or str(uuid.uuid4())
-        
+
+        # Get chat history for this session
+        chat_history = await db.chat_messages.find(
+            {"session_id": session_id}
+        ).sort("timestamp", 1).to_list(100)
+
         # Search for relevant document chunks
         relevant_chunks = await search_relevant_chunks(request.message, top_k=5)
-        
+
         if not relevant_chunks:
             return ChatResponse(
-                response="I don't have any relevant documents to answer your question. Please upload some PDF documents first.",
+                response="I apologize, but I don't have access to any relevant corporate documents to answer your question. Please ensure the necessary documents have been uploaded to the system.",
                 session_id=session_id,
                 source_documents=[]
             )
-        
-        # Generate response using RAG
-        response_text = await generate_rag_response(request.message, relevant_chunks)
+
+        # Generate response using RAG with conversation history
+        response_text = await generate_rag_response(request.message, relevant_chunks, chat_history)
         
         # Prepare source documents info
         source_documents = []
@@ -473,18 +550,20 @@ logger = logging.getLogger(__name__)
 async def shutdown_db_client():
     client.close()
 
-# Test LLM connection on startup
-@app.on_event("startup")
-async def test_llm_connection():
-    try:
-        test_chat = LlmChat(
-            api_key=llm_api_key,
-            session_id="startup_test",
-            system_message="You are a test assistant."
-        ).with_model("openai", "gpt-4o-mini")
-        
-        test_message = UserMessage(text="Say 'LLM connection successful'")
-        await test_chat.send_message(test_message)
-        logger.info("LLM connection test successful")
-    except Exception as e:
-        logger.error(f"LLM connection test failed: {str(e)}")
+# Test OpenAI connection on startup (commented out for development)
+# @app.on_event("startup")
+# async def test_openai_connection():
+#     try:
+#         if not openai_client:
+#             logger.warning("OpenAI API key is not configured")
+#             return
+#         
+#         # Simple test to verify OpenAI connection
+#         response = await openai_client.chat.completions.create(
+#             model="gpt-3.5-turbo",
+#             messages=[{"role": "user", "content": "Say 'OpenAI connection successful'"}],
+#             max_tokens=10
+#         )
+#         logger.info("OpenAI connection test successful")
+#     except Exception as e:
+#         logger.error(f"OpenAI connection test failed: {str(e)}")
