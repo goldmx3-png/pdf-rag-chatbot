@@ -56,6 +56,7 @@ function App() {
   // Load documents on component mount
   useEffect(() => {
     loadDocuments();
+    loadChatSessions();
   }, []);
 
   const generateSessionId = () => {
