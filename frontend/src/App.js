@@ -112,6 +112,23 @@ function App() {
     }
   };
 
+  const loadChatSessions = async () => {
+    try {
+      const response = await axios.get(`${API}/chat/sessions`);
+      setChatSessions(response.data);
+    } catch (error) {
+      console.error('Error loading chat sessions:', error);
+    }
+  };
+
+  const switchToSession = async (session) => {
+    setSessionId(session.session_id);
+    localStorage.setItem('currentSessionId', session.session_id);
+    await loadChatHistory(session.session_id);
+    setShowSessions(false);
+    toast.success('Switched to previous session');
+  };
+
   const handleFileSelect = (event) => {
     const file = event.target.files[0];
     if (file) {
