@@ -28,6 +28,7 @@ function App() {
   const [showSessions, setShowSessions] = useState(false);
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
+  const sessionsDropdownRef = useRef(null);
 
   // Generate or restore session ID on first load
   useEffect(() => {
