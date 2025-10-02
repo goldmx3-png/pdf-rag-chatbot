@@ -28,8 +28,8 @@ mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
-# Initialize ChromaDB (in-memory for now)
-chroma_client = chromadb.Client(Settings(persist_directory="/app/chroma_db"))
+# Initialize ChromaDB with persistence
+chroma_client = chromadb.PersistentClient(path="/app/chroma_db")
 
 # Initialize sentence transformer for embeddings
 embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
