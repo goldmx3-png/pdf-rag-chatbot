@@ -74,6 +74,41 @@ function App() {
     }
   };
 
+  const loadChatHistory = async (session) => {
+    try {
+      const response = await axios.get(`${API}/chat/history/${session}`);
+      const history = response.data;
+      
+      // Convert backend chat history to frontend message format
+      const chatMessages = [];
+      history.forEach(item => {
+        // Add user message
+        chatMessages.push({
+          type: 'user',
+          content: item.message,
+          timestamp: new Date(item.timestamp),
+        });
+        
+        // Add bot response
+        chatMessages.push({
+          type: 'bot',
+          content: item.response,
+          source_documents: item.source_documents?.map(filename => ({ 
+            filename: filename,
+            relevance_score: '1.00'
+          })) || [],
+          timestamp: new Date(item.timestamp),
+        });
+      });
+      
+      setMessages(chatMessages);
+    } catch (error) {
+      console.error('Error loading chat history:', error);
+      // Don't show error toast for missing history, just start fresh
+      setMessages([]);
+    }
+  };
+
   const handleFileSelect = (event) => {
     const file = event.target.files[0];
     if (file) {
