@@ -1,4 +1,5 @@
 from fastapi import FastAPI, APIRouter, HTTPException, File, UploadFile, Form
+from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -19,6 +20,7 @@ import json
 import chromadb
 from chromadb.config import Settings
 from openai import AsyncOpenAI
+import httpx
 
 ROOT_DIR = Path(__file__).parent
 
@@ -72,7 +74,18 @@ app = FastAPI()
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
 
-# OpenAI/OpenRouter LLM setup
+# LLM setup - Create clients for both Ollama and OpenAI
+llm_provider = os.environ.get('LLM_PROVIDER', 'ollama').lower()
+ollama_base_url = os.environ.get('OLLAMA_BASE_URL', 'http://localhost:11434')
+ollama_model = os.environ.get('OLLAMA_MODEL', 'llama3.2:3b')
+
+# Initialize Ollama client
+ollama_client = AsyncOpenAI(
+    api_key="ollama",  # Ollama doesn't require an API key
+    base_url=f"{ollama_base_url}/v1"
+)
+
+# Initialize OpenAI client
 openai_api_key = os.environ.get('OPENAI_API_KEY')
 if openai_api_key:
     # Check if it's an OpenRouter key (starts with sk-or-v1)
@@ -81,10 +94,19 @@ if openai_api_key:
             api_key=openai_api_key,
             base_url="https://openrouter.ai/api/v1"
         )
+        default_openai_model = "openai/gpt-3.5-turbo"
     else:
         openai_client = AsyncOpenAI(api_key=openai_api_key)
+        default_openai_model = "gpt-3.5-turbo"
 else:
     openai_client = None
+    default_openai_model = None
+
+# Set default model based on provider
+if llm_provider == 'ollama':
+    llm_model = ollama_model
+else:
+    llm_model = default_openai_model
 
 # Document Models
 class Document(BaseModel):
@@ -117,6 +139,7 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
+    model: Optional[str] = None
 
 class ChatResponse(BaseModel):
     response: str
@@ -231,37 +254,71 @@ async def search_relevant_chunks(query: str, top_k: int = 5) -> List[Dict[str, A
         logging.error(f"Error searching chunks: {str(e)}")
         return []
 
-async def generate_rag_response(query: str, context_chunks: List[Dict[str, Any]], chat_history: List[Dict[str, str]] = None) -> str:
-    """Generate response using OpenAI LLM with retrieved context and conversation history."""
+async def generate_rag_response(query: str, context_chunks: List[Dict[str, Any]], chat_history: List[Dict[str, str]] = None, stream: bool = False, selected_model: str = None):
+    """Generate response using LLM (OpenAI or Ollama) with retrieved context and conversation history."""
     try:
-        if not openai_client:
-            return "I apologize, but the AI service is currently not configured. Please contact your system administrator."
+        # Determine the model to use
+        model_to_use = selected_model or llm_model
+
+        # Determine which client to use based on model
+        is_ollama = model_to_use in ['llama3.2:3b', 'qwen2.5:3b'] or ':' in model_to_use
+
+        if is_ollama:
+            llm_client = ollama_client
+        else:
+            llm_client = openai_client
+
+        if not llm_client:
+            if stream:
+                async def error_stream():
+                    yield "I apologize, but the AI service is currently not configured. Please contact your system administrator."
+                return error_stream()
+            else:
+                return "I apologize, but the AI service is currently not configured. Please contact your system administrator."
 
         # Prepare context from retrieved chunks
-        context = "\n\n".join([f"Document excerpt {i+1}:\n{chunk['content']}"
+        context = "\n\n".join([f"Document excerpt {i+1}:\n{chunk['content'][:500]}"  # Limit chunk size
                               for i, chunk in enumerate(context_chunks)])
 
-        # Create messages for OpenAI Chat API
-        messages = [
-            {
-                "role": "system",
-                "content": """You are VTransact Corporate Assistant, a professional AI chatbot designed to help employees access and understand corporate documents.
+        # Create messages for Chat API
+        # Use shorter system prompt for Ollama to reduce token count
+        system_prompt = """You are a helpful AI assistant. Answer questions based on the provided document context.
+
+Instructions:
+- Answer directly using all relevant information from the document excerpts
+- If excerpts contain complementary information on the same topic, synthesize them into a complete answer
+- Only ask for clarification if excerpts discuss completely different topics that cannot be reasonably combined
+- Be concise and professional""" if llm_provider == 'ollama' else """You are VTransact Corporate Assistant, a professional AI chatbot designed to help employees access and understand corporate documents.
 
 Your role:
 - Provide accurate, professional responses based on corporate documentation
-- Use only information from the provided document context
+- Use information from all provided document excerpts to give complete answers
 - Maintain a helpful, corporate-appropriate tone
 - Reference specific documents when citing information
 - If information is not available in the provided context, politely inform the user
 - Maintain conversation context to assist with follow-up questions
 
+IMPORTANT - Handling Multiple Document Excerpts:
+- When multiple excerpts are provided, analyze if they discuss the same topic or different topics
+- If they discuss the SAME topic or complementary aspects, combine the information into one coherent answer
+- ONLY ask the user to choose if the excerpts discuss completely DIFFERENT, unrelated topics
+- Example of when to combine: Excerpts about different features of the same product → combine into complete answer
+- Example of when to ask: One excerpt about Product A, another about Product B → ask which product they want to know about
+- Default to providing a complete answer rather than asking for clarification
+
 Be concise, accurate, and professional in all responses."""
+
+        messages = [
+            {
+                "role": "system",
+                "content": system_prompt
             }
         ]
 
-        # Add conversation history (last 5 exchanges to keep context manageable)
+        # Add conversation history - limit to 2 exchanges for Ollama, 5 for others
+        history_limit = 2 if llm_provider == 'ollama' else 5
         if chat_history:
-            for msg in chat_history[-5:]:
+            for msg in chat_history[-history_limit:]:
                 messages.append({
                     "role": "user",
                     "content": msg["message"]
@@ -279,30 +336,108 @@ Be concise, accurate, and professional in all responses."""
 
 Question: {query}
 
-Please answer the question based on the provided context."""
+Please answer based on the provided context."""
         })
-        
-        # Get response from OpenAI/OpenRouter
-        # Use different model based on the API being used
-        model = "openai/gpt-3.5-turbo" if openai_api_key.startswith('sk-or-v1') else "gpt-3.5-turbo"
 
-        response = await openai_client.chat.completions.create(
-            model=model,
-            messages=messages,
-            max_tokens=1000,
-            temperature=0.3,  # Lower temperature for more focused responses
-        )
-        
-        return response.choices[0].message.content
-        
+        # Get response from LLM (Ollama or OpenAI)
+        # Use fewer tokens for Ollama to speed up response
+        if is_ollama:
+            max_tokens = 300
+        else:
+            max_tokens = 1000
+
+        # If streaming is requested, return an async generator
+        if stream:
+            async def stream_response():
+                try:
+                    response_stream = await llm_client.chat.completions.create(
+                        model=model_to_use,
+                        messages=messages,
+                        max_tokens=max_tokens,
+                        temperature=0.3,
+                        timeout=120.0 if is_ollama else 30.0,
+                        stream=True
+                    )
+
+                    async for chunk in response_stream:
+                        if chunk.choices[0].delta.content:
+                            yield chunk.choices[0].delta.content
+
+                except Exception as e:
+                    logging.error(f"Error in streaming response: {str(e)}")
+                    yield f"\n\nError: {str(e)}"
+
+            return stream_response()
+        else:
+            # Non-streaming response (original behavior)
+            response = await llm_client.chat.completions.create(
+                model=model_to_use,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=0.3,
+                timeout=120.0 if is_ollama else 30.0,
+            )
+
+            return response.choices[0].message.content
+
     except Exception as e:
         logging.error(f"Error generating OpenAI response: {str(e)}")
-        return "I apologize, but I'm having trouble processing your request right now. Please try again later."
+        if stream:
+            async def error_stream():
+                yield "I apologize, but I'm having trouble processing your request right now. Please try again later."
+            return error_stream()
+        else:
+            return "I apologize, but I'm having trouble processing your request right now. Please try again later."
 
 # Routes
 @api_router.get("/")
 async def root():
     return {"message": "RAG Chatbot API is running"}
+
+@api_router.get("/models")
+async def get_available_models():
+    """Get list of available LLM models."""
+    try:
+        available_models = []
+
+        # Always add OpenAI models if API key is configured
+        if os.environ.get('OPENAI_API_KEY'):
+            api_key = os.environ.get('OPENAI_API_KEY')
+            if api_key.startswith('sk-or-v1'):
+                # OpenRouter models
+                available_models.extend([
+                    {"id": "openai/gpt-3.5-turbo", "name": "GPT-3.5 Turbo (OpenRouter)", "provider": "openrouter"},
+                    {"id": "openai/gpt-4", "name": "GPT-4 (OpenRouter)", "provider": "openrouter"},
+                ])
+            else:
+                # OpenAI models
+                available_models.extend([
+                    {"id": "gpt-3.5-turbo", "name": "GPT-3.5 Turbo", "provider": "openai"},
+                    {"id": "gpt-4", "name": "GPT-4", "provider": "openai"},
+                ])
+
+        # Check for Ollama models
+        try:
+            ollama_url = os.environ.get('OLLAMA_BASE_URL', 'http://localhost:11434')
+            async with httpx.AsyncClient() as client:
+                response = await client.get(f"{ollama_url}/api/tags", timeout=5.0)
+                if response.status_code == 200:
+                    data = response.json()
+                    for model in data.get('models', []):
+                        model_name = model.get('name', '')
+                        available_models.append({
+                            "id": model_name,
+                            "name": f"{model_name.split(':')[0].upper()} ({model_name.split(':')[1] if ':' in model_name else 'latest'})",
+                            "provider": "ollama"
+                        })
+        except Exception as e:
+            logging.warning(f"Could not fetch Ollama models: {str(e)}")
+
+        return {"models": available_models, "default": llm_model}
+
+    except Exception as e:
+        logging.error(f"Error fetching models: {str(e)}")
+        raise HTTPException(status_code=500, detail="Error fetching available models")
 
 @api_router.post("/status", response_model=StatusCheck)
 async def create_status_check(input: StatusCheckCreate):
@@ -408,9 +543,9 @@ async def delete_document(document_id: str):
         logging.error(f"Error deleting document: {str(e)}")
         raise HTTPException(status_code=500, detail="Error deleting document")
 
-@api_router.post("/chat", response_model=ChatResponse)
+@api_router.post("/chat")
 async def chat_with_documents(request: ChatRequest):
-    """Chat with uploaded documents using RAG."""
+    """Chat with uploaded documents using RAG with streaming support."""
     try:
         session_id = request.session_id or str(uuid.uuid4())
 
@@ -419,19 +554,18 @@ async def chat_with_documents(request: ChatRequest):
             {"session_id": session_id}
         ).sort("timestamp", 1).to_list(100)
 
-        # Search for relevant document chunks
-        relevant_chunks = await search_relevant_chunks(request.message, top_k=5)
+        # Search for relevant document chunks - use fewer for Ollama to avoid context overflow
+        top_k = 2 if llm_provider == 'ollama' else 5
+        relevant_chunks = await search_relevant_chunks(request.message, top_k=top_k)
 
         if not relevant_chunks:
+            # For non-streaming, return error as JSON
             return ChatResponse(
                 response="I apologize, but I don't have access to any relevant corporate documents to answer your question. Please ensure the necessary documents have been uploaded to the system.",
                 session_id=session_id,
                 source_documents=[]
             )
 
-        # Generate response using RAG with conversation history
-        response_text = await generate_rag_response(request.message, relevant_chunks, chat_history)
-        
         # Prepare source documents info
         source_documents = []
         unique_docs = {}
@@ -446,29 +580,42 @@ async def chat_with_documents(request: ChatRequest):
                         "filename": doc['filename'],
                         "relevance_score": f"{chunk['similarity_score']:.2f}"
                     }
-        
+
         source_documents = list(unique_docs.values())
-        
-        # Store chat message
-        chat_message = ChatMessage(
-            session_id=session_id,
-            message=request.message,
-            response=response_text,
-            source_chunks=[{
-                "document_id": chunk['document_id'],
-                "chunk_index": chunk['chunk_index'],
-                "similarity_score": chunk['similarity_score']
-            } for chunk in relevant_chunks]
-        )
-        
-        await db.chat_messages.insert_one(chat_message.dict())
-        
-        return ChatResponse(
-            response=response_text,
-            session_id=session_id,
-            source_documents=source_documents
-        )
-    
+
+        # Generate streaming response
+        async def event_generator():
+            full_response = ""
+
+            # Send session_id and source_documents first
+            yield f"data: {json.dumps({'type': 'metadata', 'session_id': session_id, 'source_documents': source_documents})}\n\n"
+
+            # Stream the response
+            response_stream = await generate_rag_response(request.message, relevant_chunks, chat_history, stream=True, selected_model=request.model)
+
+            async for chunk in response_stream:
+                full_response += chunk
+                yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
+
+            # Send done signal
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+            # Store chat message after streaming is complete
+            chat_message = ChatMessage(
+                session_id=session_id,
+                message=request.message,
+                response=full_response,
+                source_chunks=[{
+                    "document_id": chunk['document_id'],
+                    "chunk_index": chunk['chunk_index'],
+                    "similarity_score": chunk['similarity_score']
+                } for chunk in relevant_chunks]
+            )
+
+            await db.chat_messages.insert_one(chat_message.dict())
+
+        return StreamingResponse(event_generator(), media_type="text/event-stream")
+
     except Exception as e:
         logging.error(f"Error in chat: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error processing chat: {str(e)}")

@@ -11,12 +11,15 @@ import { Alert, AlertDescription } from './components/ui/alert';
 import { toast } from 'sonner';
 import { Toaster } from './components/ui/sonner';
 import { Separator } from './components/ui/separator';
-import { Upload, MessageSquare, FileText, Trash2, Send, Bot, User, Loader2, History, Clock, ChevronDown } from 'lucide-react';
+import { Upload, MessageSquare, FileText, Trash2, Send, Bot, User, Loader2, History, Clock, ChevronDown, Moon, Sun, Cpu } from 'lucide-react';
+import { useTheme } from './components/theme-provider';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './components/ui/select';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
 function App() {
+  const { theme, setTheme } = useTheme();
   const [documents, setDocuments] = useState([]);
   const [messages, setMessages] = useState([]);
   const [currentMessage, setCurrentMessage] = useState('');
@@ -27,6 +30,8 @@ function App() {
   const [activeTab, setActiveTab] = useState('chat');
   const [chatSessions, setChatSessions] = useState([]);
   const [showSessions, setShowSessions] = useState(false);
+  const [availableModels, setAvailableModels] = useState([]);
+  const [selectedModel, setSelectedModel] = useState(null);
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
   const sessionsDropdownRef = useRef(null);
@@ -55,10 +60,11 @@ function App() {
     scrollToBottom();
   }, [messages]);
 
-  // Load documents on component mount
+  // Load documents and models on component mount
   useEffect(() => {
     loadDocuments();
     loadChatSessions();
+    loadAvailableModels();
   }, []);
 
   // Close sessions dropdown when clicking outside
@@ -134,6 +140,19 @@ function App() {
       setChatSessions(response.data);
     } catch (error) {
       console.error('Error loading chat sessions:', error);
+    }
+  };
+
+  const loadAvailableModels = async () => {
+    try {
+      const response = await axios.get(`${API}/models`);
+      setAvailableModels(response.data.models || []);
+      if (response.data.default && !selectedModel) {
+        setSelectedModel(response.data.default);
+      }
+    } catch (error) {
+      console.error('Error loading models:', error);
+      toast.error('Failed to load available models');
     }
   };
 
@@ -221,36 +240,109 @@ function App() {
     };
     setMessages(prev => [...prev, newUserMessage]);
 
+    // Create a placeholder bot message that we'll update as we stream
+    const botMessageIndex = messages.length + 1; // +1 because we just added user message
+    const placeholderBotMessage = {
+      type: 'bot',
+      content: '',
+      source_documents: [],
+      timestamp: new Date(),
+      isStreaming: true,
+    };
+    setMessages(prev => [...prev, placeholderBotMessage]);
+
     try {
-      const response = await axios.post(`${API}/chat`, {
-        message: userMessage,
-        session_id: sessionId,
+      const response = await fetch(`${API}/chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          message: userMessage,
+          session_id: sessionId,
+          model: selectedModel,
+        }),
       });
 
-      // Add bot response to chat
-      const botMessage = {
-        type: 'bot',
-        content: response.data.response,
-        source_documents: response.data.source_documents || [],
-        timestamp: new Date(),
-      };
-      setMessages(prev => [...prev, botMessage]);
-      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let fullContent = '';
+      let metadata = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || ''; // Keep the last incomplete line in buffer
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const data = JSON.parse(line.slice(6));
+
+            if (data.type === 'metadata') {
+              metadata = {
+                session_id: data.session_id,
+                source_documents: data.source_documents,
+              };
+            } else if (data.type === 'content') {
+              fullContent += data.content;
+
+              // Update the bot message with accumulated content
+              setMessages(prev => {
+                const newMessages = [...prev];
+                newMessages[botMessageIndex] = {
+                  type: 'bot',
+                  content: fullContent,
+                  source_documents: metadata?.source_documents || [],
+                  timestamp: new Date(),
+                  isStreaming: true,
+                };
+                return newMessages;
+              });
+            } else if (data.type === 'done') {
+              // Mark streaming as complete
+              setMessages(prev => {
+                const newMessages = [...prev];
+                newMessages[botMessageIndex] = {
+                  type: 'bot',
+                  content: fullContent,
+                  source_documents: metadata?.source_documents || [],
+                  timestamp: new Date(),
+                  isStreaming: false,
+                };
+                return newMessages;
+              });
+            }
+          }
+        }
+      }
+
       // Refresh sessions list to show updated message count
       await loadChatSessions();
 
     } catch (error) {
       console.error('Error sending message:', error);
       toast.error('Failed to send message');
-      
-      // Add error message
-      const errorMessage = {
-        type: 'bot',
-        content: 'Sorry, I encountered an error while processing your message. Please try again.',
-        timestamp: new Date(),
-        isError: true,
-      };
-      setMessages(prev => [...prev, errorMessage]);
+
+      // Replace placeholder with error message
+      setMessages(prev => {
+        const newMessages = [...prev];
+        newMessages[botMessageIndex] = {
+          type: 'bot',
+          content: 'Sorry, I encountered an error while processing your message. Please try again.',
+          timestamp: new Date(),
+          isError: true,
+        };
+        return newMessages;
+      });
     } finally {
       setIsLoading(false);
     }
@@ -266,11 +358,11 @@ function App() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-cyan-50">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-cyan-50 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950">
       <Toaster position="bottom-right" expand={false} richColors />
-      
+
       {/* Header */}
-      <header className="bg-white/80 backdrop-blur-md border-b border-slate-200 sticky top-0 z-50">
+      <header className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md border-b border-slate-200 dark:border-slate-700 sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-3">
@@ -278,14 +370,26 @@ function App() {
                 <Bot className="w-6 h-6 text-white" />
               </div>
               <div>
-                <h1 className="text-2xl font-bold bg-gradient-to-r from-blue-600 to-cyan-600 bg-clip-text text-transparent">
+                <h1 className="text-2xl font-bold bg-gradient-to-r from-blue-600 to-cyan-600 dark:from-blue-400 dark:to-cyan-400 bg-clip-text text-transparent">
                   VTransact Corporate Chatbot
                 </h1>
-                <p className="text-sm text-slate-600">Your AI-powered corporate document assistant</p>
+                <p className="text-sm text-slate-600 dark:text-slate-300">Your AI-powered corporate document assistant</p>
               </div>
             </div>
             
             <div className="flex items-center space-x-2">
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+                className="mr-2"
+              >
+                {theme === 'dark' ? (
+                  <Sun className="h-5 w-5" />
+                ) : (
+                  <Moon className="h-5 w-5" />
+                )}
+              </Button>
               <Button
                 variant={activeTab === 'chat' ? 'default' : 'outline'}
                 onClick={() => setActiveTab('chat')}
@@ -313,7 +417,7 @@ function App() {
         {activeTab === 'documents' && (
           <div className="space-y-6">
             {/* Upload Section */}
-            <Card className="bg-white/60 backdrop-blur-sm border-slate-200" data-testid="upload-section">
+            <Card className="bg-white/60 dark:bg-slate-800/60 backdrop-blur-sm border-slate-200 dark:border-slate-700" data-testid="upload-section">
               <CardHeader>
                 <CardTitle className="flex items-center space-x-2">
                   <Upload className="w-5 h-5" />
@@ -366,7 +470,7 @@ function App() {
             </Card>
 
             {/* Documents List */}
-            <Card className="bg-white/60 backdrop-blur-sm border-slate-200" data-testid="documents-list">
+            <Card className="bg-white/60 dark:bg-slate-800/60 backdrop-blur-sm border-slate-200 dark:border-slate-700" data-testid="documents-list">
               <CardHeader>
                 <CardTitle className="flex items-center space-x-2">
                   <FileText className="w-5 h-5" />
@@ -423,16 +527,33 @@ function App() {
         {activeTab === 'chat' && (
           <div className="space-y-6">
             {/* Chat Header */}
-            <Card className="bg-white/60 backdrop-blur-sm border-slate-200">
+            <Card className="bg-white/60 dark:bg-slate-800/60 backdrop-blur-sm border-slate-200 dark:border-slate-700">
               <CardContent className="pt-6">
                 <div className="flex items-center justify-between">
                   <div>
-                    <h2 className="text-xl font-semibold text-slate-900">Chat with Documents</h2>
-                    <p className="text-sm text-slate-600">
+                    <h2 className="text-xl font-semibold text-slate-900 dark:text-slate-100">Chat with Documents</h2>
+                    <p className="text-sm text-slate-600 dark:text-slate-400">
                       {documents.length} document{documents.length !== 1 ? 's' : ''} available for questions
                     </p>
                   </div>
                   <div className="flex items-center space-x-2">
+                    {/* Model Selector */}
+                    <div className="flex items-center space-x-2 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 bg-white dark:bg-slate-800">
+                      <Cpu className="w-4 h-4 text-slate-600 dark:text-slate-400" />
+                      <Select value={selectedModel} onValueChange={setSelectedModel}>
+                        <SelectTrigger className="w-[200px] border-0 focus:ring-0 shadow-none">
+                          <SelectValue placeholder="Select model" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {availableModels.map((model) => (
+                            <SelectItem key={model.id} value={model.id}>
+                              {model.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
                     <div className="relative" ref={sessionsDropdownRef}>
                       <Button
                         variant="outline"
@@ -446,20 +567,20 @@ function App() {
                       </Button>
                       
                       {showSessions && (
-                        <div className="absolute right-0 mt-2 w-80 bg-white border border-slate-200 rounded-lg shadow-lg z-50 max-h-96 overflow-y-auto">
-                          <div className="p-4 border-b border-slate-200">
-                            <h3 className="font-medium text-slate-900">Chat Sessions</h3>
+                        <div className="absolute right-0 mt-2 w-80 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg z-50 max-h-96 overflow-y-auto">
+                          <div className="p-4 border-b border-slate-200 dark:border-slate-700">
+                            <h3 className="font-medium text-slate-900 dark:text-slate-100">Chat Sessions</h3>
                           </div>
                           <div className="p-2">
                             {chatSessions.length === 0 ? (
-                              <p className="text-sm text-slate-500 p-4 text-center">No previous sessions</p>
+                              <p className="text-sm text-slate-500 dark:text-slate-400 p-4 text-center">No previous sessions</p>
                             ) : (
                               chatSessions.slice(0, 10).map((session) => (
                                 <button
                                   key={session.session_id}
                                   onClick={() => switchToSession(session)}
-                                  className={`w-full text-left p-3 rounded-lg hover:bg-slate-50 border mb-2 ${
-                                    session.session_id === sessionId ? 'bg-blue-50 border-blue-200' : 'border-slate-200'
+                                  className={`w-full text-left p-3 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700 border mb-2 ${
+                                    session.session_id === sessionId ? 'bg-blue-50 dark:bg-blue-900/30 border-blue-200 dark:border-blue-700' : 'border-slate-200 dark:border-slate-700'
                                   }`}
                                   data-testid={`session-${session.session_id}`}
                                 >
@@ -512,7 +633,7 @@ function App() {
             </Card>
 
             {/* Chat Messages */}
-            <Card className="bg-white/60 backdrop-blur-sm border-slate-200" data-testid="chat-container">
+            <Card className="bg-white/60 dark:bg-slate-800/60 backdrop-blur-sm border-slate-200 dark:border-slate-700" data-testid="chat-container">
               <CardContent className="p-0">
                 <div className="h-96 overflow-y-auto p-4 space-y-4">
                   {messages.length === 0 ? (
@@ -537,8 +658,8 @@ function App() {
                             message.type === 'user'
                               ? 'bg-gradient-to-r from-blue-500 to-cyan-500 text-white'
                               : message.isError
-                              ? 'bg-red-50 border border-red-200 text-red-800'
-                              : 'bg-white border border-slate-200 text-slate-900'
+                              ? 'bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-700 text-red-800 dark:text-red-300'
+                              : 'bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100'
                           }`}
                         >
                           <div className="flex items-start space-x-2">
@@ -549,20 +670,30 @@ function App() {
                               <User className="w-5 h-5 mt-0.5 text-white" />
                             )}
                             <div className="flex-1">
-                              <div className="text-sm leading-relaxed prose prose-sm max-w-none prose-p:my-1 prose-strong:text-slate-900 prose-strong:font-semibold">
+                              <div className={`text-sm leading-relaxed prose prose-sm max-w-none prose-p:my-1 ${
+                                message.type === 'user'
+                                  ? 'prose-strong:text-white'
+                                  : 'prose-strong:text-slate-900 dark:prose-strong:text-slate-100 prose-p:text-slate-900 dark:prose-p:text-slate-100'
+                              } prose-strong:font-semibold`}>
                                 <ReactMarkdown>{message.content}</ReactMarkdown>
                               </div>
                               
                               {message.source_documents && message.source_documents.length > 0 && (
-                                <div className="mt-3 pt-3 border-t border-slate-200">
-                                  <p className="text-xs text-slate-600 mb-2">Sources:</p>
+                                <div className="mt-3 pt-3 border-t border-slate-200 dark:border-slate-600">
+                                  <p className="text-xs text-slate-600 dark:text-slate-400 mb-2">Sources:</p>
                                   <div className="space-y-1">
                                     {message.source_documents.map((doc, idx) => (
-                                      <Badge key={idx} variant="outline" className="text-xs mr-2">
+                                      <Badge key={idx} variant="outline" className="text-xs mr-2 dark:border-slate-600 dark:text-slate-300">
                                         {doc.filename} ({doc.relevance_score})
                                       </Badge>
                                     ))}
                                   </div>
+                                </div>
+                              )}
+                              {message.isStreaming && (
+                                <div className="mt-2 flex items-center space-x-1">
+                                  <Loader2 className="w-3 h-3 animate-spin text-blue-500" />
+                                  <span className="text-xs text-slate-500 dark:text-slate-400">Generating...</span>
                                 </div>
                               )}
                             </div>
@@ -572,14 +703,14 @@ function App() {
                     ))
                   )}
                   
-                  {isLoading && (
+                  {isLoading && messages.length > 0 && messages[messages.length - 1].isStreaming && messages[messages.length - 1].content === '' && (
                     <div className="flex justify-start" data-testid="loading-message">
-                      <div className="bg-white border border-slate-200 rounded-lg px-4 py-3">
+                      <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-4 py-3">
                         <div className="flex items-center space-x-2">
                           <Bot className="w-5 h-5 text-blue-500" />
                           <div className="flex items-center space-x-1">
                             <Loader2 className="w-4 h-4 animate-spin" />
-                            <span className="text-sm text-slate-600">Thinking...</span>
+                            <span className="text-sm text-slate-600 dark:text-slate-300">Thinking...</span>
                           </div>
                         </div>
                       </div>
